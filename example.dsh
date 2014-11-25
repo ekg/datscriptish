@@ -1,0 +1,87 @@
+# datscriptish
+
+# it's kind've like make, but not really
+# and it's for streams
+
+# but there is a trick: somehow the streams can look like files
+# and so can pipes
+
+# attempt at describing semantics
+# | == pipe: take output of previous and put to input of following
+# > == fork / redirect
+# @something == a here-doc/makefile like script to be found in this or another sourced file
+# >x == write to "file" x ... in dat land these could be blobs
+# we don't need escapes to continue lines on these elements
+# successive lines are read together as single pipelines, unless there is a shebang #!
+
+# this is a simple variant calling pipeline
+# you start with reads and end up with genotypes across alleles
+# it doesn't really work as implemented, but this is an example
+
+# things keep going until there are no more pipes
+# if you want to save your output, you have to redirect it to an endpoint
+# note that you can have multiple forks per element
+# the > symbol doesn't mean "write to file" but "redirect this stream to this sink"
+# which is possibly another pipeline, command, etc.
+
+# there should be some kind of mechanism for variables, maybe %var ? so as to be weird.
+# maybe the variables can sometimes resolve to things that look like files to applications #narsty
+
+@reads | @align |
+@sort-alignments >aln.bam |
+@call-variants >@filter-variants >var.vcf >@dat-import
+
+@reads:
+    zcat reads.fq.gz | @filter-short-reads
+
+@filter-short-reads:
+    awk '{ if (len($0) > 20) print; }'
+
+@align:
+    bwa mem ref.fa -
+
+@sort-alignments:
+    samtools sort -o - x
+
+@filter-variants:
+    vcffilter -f "QUAL > 20" -t PASS >@dat-import
+
+@dat-import:
+    dat import --csv
+
+@call-variants:
+    @freebayes | @sort-vcf
+
+@split-bam(nrecords, command):
+    samtools view - | @for-every(nrecords, command)
+
+# i can't think of an easy way to implement this
+# but the basic idea is a kind of map operation
+@for-every(nrecords, command):
+    # imagine a python script doing this
+
+@freebayes: %ref
+    @split-bam(10000, 'samtools -Su - | freebayes -f %ref --stdin')
+
+# this implements a merge step
+# it works for our reduce provided the output is interleaved by whole job rather than by line
+# reduce steps are confusing though--- each one needs to be data-aware
+@sort-vcf:
+    @vcf-first-header | @vcf-sort
+
+# arbitrary scripts are possible... why not?
+# this can make it easier to wrap unruly non-streaming tools
+@vcf-first-header:
+    #!/usr/bin/python
+    import sys
+    header=True
+    for line in sys.stdin:
+        if line.startswith('#'):
+            if header:
+                print line.strip()
+            continue
+        header=False
+        print line.strip()
+
+@vcf-sort:
+    sort -k1,1V -k2,2n
